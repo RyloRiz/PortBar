@@ -1,0 +1,62 @@
+name: Build macOS DMG
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    # Must use a macOS runner to access Xcode tools and code-signing identity
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # Optional: Select a specific Xcode version if needed
+    - name: Select Xcode Version
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: 'latest-stable'
+
+    # Note: For public distribution, you should insert Apple Code Signing steps here
+    # See: https://docs.github.com/actions/deployment/deploying-xcode-applications/installing-an-apple-certificate-on-macos-runners-for-xcode-development
+
+    - name: Build Xcode Project
+      run: |
+        xcodebuild -project "PortBar.xcodeproj" \
+                   -scheme "PortBar" \
+                   -configuration Release \
+                   -derivedDataPath BuildData \
+                   clean build
+                   
+    - name: Prepare Deployment Directory
+      run: |
+        mkdir dmg_root
+        # Find the compiled .app bundle and copy it to the staging folder
+        cp -R BuildData/Build/Products/Release/PortBar.app dmg_root/
+
+    - name: Install create-dmg tool
+      run: brew install create-dmg
+
+    - name: Generate DMG file
+      run: |
+        create-dmg \
+          --volname "PortBar" \
+          --window-pos 200 120 \
+          --window-size 600 400 \
+          --icon-size 100 \
+          --icon "PortBar.app" 175 120 \
+          --hide-extension "PortBar.app" \
+          --app-drop-link 425 120 \
+          "PortBar.dmg" \
+          "dmg_root/"
+
+    - name: Upload DMG Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: macos-installer
+        path: PortBar.dmg
+
