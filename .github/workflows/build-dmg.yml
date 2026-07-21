@@ -30,6 +30,8 @@ jobs:
                    -scheme "PortBar" \
                    -configuration Release \
                    -derivedDataPath BuildData \
+                   CODE_SIGNING_ALLOWED=NO \
+                   CODE_SIGNING_REQUIRED=NO \
                    clean build
                    
     - name: Prepare Deployment Directory
