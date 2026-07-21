@@ -86,7 +86,7 @@ final class PortMonitor: NSObject, ObservableObject {
     private var pollingInterval: TimeInterval
     var eventHandler: ((PortEvent) -> Void)?
 
-    init(pollingInterval: TimeInterval = 1.5) {
+    init(pollingInterval: TimeInterval = 5) {
         self.pollingInterval = pollingInterval
         super.init()
         refresh()

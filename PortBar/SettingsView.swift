@@ -7,9 +7,21 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
+    private enum SettingsDomain: String, CaseIterable, Identifiable {
+        case about = "About"
+        case filters = "Filters"
+        case popup = "Popup"
+        case general = "General"
+        case history = "History"
+
+        var id: Self { self }
+    }
+
     @ObservedObject var monitor: PortMonitor
     @ObservedObject var preferences: PreferencesStore
     @ObservedObject var notifications: PortNotificationManager
+    @ObservedObject var history: HistoryStore
+    @Environment(\.portBarAccent) private var appAccent
     @State private var selectedFilterID: QuickFilter.ID?
     @State private var selectedPackID: ServicePack.ID?
     @State private var isReordering = false
@@ -17,6 +29,8 @@ struct SettingsView: View {
     @State private var showsRestoreDefaultsAlert = false
     @State private var portBeingEdited: ListeningPort?
     @State private var isAdvancedMatchingExpanded = false
+    @State private var selectedDomain: SettingsDomain = .filters
+    @State private var showsClearHistoryAlert = false
 
     private let packColumns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 2)
 
@@ -47,18 +61,46 @@ struct SettingsView: View {
         preferences.quickFilters.filter(\.isEnabled).count
     }
 
+    private var matchedListenerCount: Int {
+        let matches = monitor.ports.filter { port in
+            preferences.quickFilters.contains { filter in
+                filter.isEnabled && filter.matches(port)
+            }
+        }
+        return Set(matches.map { "\($0.pid):\($0.port)" }).count
+    }
+
     private var lastScanDescription: String {
         guard let date = monitor.lastScanDate else { return "Waiting for first scan" }
         return "Last scan " + date.formatted(.relative(presentation: .named))
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            library
-                .frame(width: 300)
+        VStack(spacing: 0) {
+            Picker("Settings section", selection: $selectedDomain) {
+                ForEach(SettingsDomain.allCases) { domain in
+                    Text(domain.rawValue).tag(domain)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 380)
+            .padding(.vertical, 13)
+
             Divider()
-            inspector
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            switch selectedDomain {
+            case .about:
+                aboutSettings
+            case .filters:
+                filtersWorkspace
+            case .popup:
+                PopupSettingsView(preferences: preferences)
+            case .general:
+                generalSettings
+            case .history:
+                historySettings
+            }
         }
         .frame(width: 980, height: 680)
         .onAppear {
@@ -85,9 +127,382 @@ struct SettingsView: View {
         } message: {
             Text("This restores the built-in ports, process matching, color, and alert settings for \(selectedFilterValue?.label ?? "this service").")
         }
+        .alert("Clear activity history?", isPresented: $showsClearHistoryAlert) {
+            Button("Clear history", role: .destructive) {
+                history.clear()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes the saved matched-service activity from ~/.portbar/history.json.")
+        }
         .popover(item: $portBeingEdited, arrowEdge: .trailing) { port in
             PortAnnotationEditor(port: port, preferences: preferences)
         }
+    }
+
+    private var filtersWorkspace: some View {
+        HStack(spacing: 0) {
+            library
+                .frame(width: 300)
+            Divider()
+            inspector
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var aboutSettings: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer(minLength: 0)
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 20) {
+                    Image("PortBarLogo")
+                        .resizable()
+                        .interpolation(.high)
+                        .renderingMode(.template)
+                        .scaledToFit()
+                        .padding(18)
+                        .foregroundStyle(appAccent)
+                        .background(appAccent.opacity(0.13), in: RoundedRectangle(cornerRadius: 19, style: .continuous))
+                        .frame(width: 88, height: 88)
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("PortBar")
+                            .font(.system(size: 30, weight: .bold))
+                        Text("Local development ports, at a glance.")
+                            .font(.system(size: 15))
+                            .foregroundStyle(.secondary)
+                        Text(versionDescription)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 2)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Divider()
+                    .padding(.vertical, 30)
+
+                VStack(alignment: .leading, spacing: 15) {
+                    aboutRow("Created by") {
+                        Link("Rizwaan Bana", destination: URL(string: "https://github.com/RyloRiz")!)
+                    }
+
+                    aboutRow("Source code") {
+                        Link("github.com/RyloRiz/portbar", destination: URL(string: "https://github.com/RyloRiz/portbar")!)
+                            .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Text("© 2026 Rizwaan Bana")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: 560, alignment: .leading)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 52)
+        .padding(.vertical, 42)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private var versionDescription: String {
+        let bundle = Bundle.main
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        return "Version \(version) (\(build))"
+    }
+
+    private func aboutRow<Content: View>(
+        _ label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 90, alignment: .leading)
+            content()
+        }
+    }
+
+    private var generalSettings: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("General")
+                        .font(.system(size: 24, weight: .semibold))
+                    Text("Appearance and app-wide behavior.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 32)
+                .padding(.top, 30)
+                .padding(.bottom, 25)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 25) {
+                    generalSection("APPEARANCE") {
+                        HStack(spacing: 16) {
+                            Text("Accent color")
+                                .frame(width: 88, alignment: .leading)
+
+                            HStack(spacing: 8) {
+                                ForEach(AppAccent.allCases) { accent in
+                                    AccentSwatch(
+                                        accent: accent,
+                                        isSelected: preferences.accent == accent.rawValue
+                                    ) {
+                                        preferences.accent = accent.rawValue
+                                    }
+                                }
+
+                                Divider()
+                                    .frame(height: 22)
+                                    .padding(.horizontal, 2)
+
+                                ColorPicker("Custom", selection: customAccentColor, supportsOpacity: false)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .help("Choose a custom accent color")
+                            }
+                        }
+
+                        Text("Used for selection, controls, and active app actions.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    generalSection("POPUP") {
+                        HStack(spacing: 14) {
+                            Text("Show up to")
+                                .frame(width: 88, alignment: .leading)
+                            Picker("Show up to", selection: Binding(
+                                get: { preferences.popupServiceLimit },
+                                set: { preferences.setPopupServiceLimit($0) }
+                            )) {
+                                ForEach(PreferencesStore.popupServiceLimitOptions, id: \.self) { limit in
+                                    Text("\(limit) services").tag(limit)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                        }
+
+                        Text("Only pinned services appear in the popup. Organize them in the Popup settings pane.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    generalSection("WORKING FOLDERS") {
+                        Picker("Open directories in", selection: $preferences.terminalApplication) {
+                            ForEach(TerminalApplication.allCases) { application in
+                                Text(application.label).tag(application)
+                            }
+                        }
+                        .pickerStyle(.menu)
+
+                        Text("Used by the Terminal action in a process’s detail panel.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    generalSection("MONITORING") {
+                        HStack(spacing: 14) {
+                            Text("Scan every")
+                                .frame(width: 88, alignment: .leading)
+                            Slider(value: $preferences.pollingInterval, in: 0.75...10, step: 0.25)
+                            Text("\(preferences.pollingInterval.formatted(.number.precision(.fractionLength(0...2)))) sec")
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 52, alignment: .trailing)
+                        }
+                        .onChange(of: preferences.pollingInterval) { _, interval in
+                            monitor.setPollingInterval(interval)
+                        }
+
+                        Text("Shorter intervals surface listeners sooner; longer intervals use less battery.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    generalSection("STARTUP") {
+                        Toggle("Launch PortBar at login", isOn: Binding(
+                            get: { preferences.launchAtLogin },
+                            set: { preferences.setLaunchAtLogin($0) }
+                        ))
+                        .toggleStyle(.switch)
+
+                        Text("Keep PortBar available in the menu bar after restarting your Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(32)
+            }
+            .frame(maxWidth: 660, alignment: .leading)
+        }
+    }
+
+    private var historySettings: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("History")
+                        .font(.system(size: 24, weight: .semibold))
+                    Text("Matched services that started or stopped on this Mac.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 32)
+                .padding(.top, 30)
+                .padding(.bottom, 25)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 25) {
+                    generalSection("STORAGE") {
+                        HStack(spacing: 14) {
+                            Text("Keep activity")
+                                .frame(width: 88, alignment: .leading)
+                            Picker("Keep activity", selection: $history.retention) {
+                                ForEach(HistoryRetention.allCases) { retention in
+                                    Text(retention.label).tag(retention)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                        }
+
+                        HStack(spacing: 9) {
+                            Image(systemName: "folder")
+                                .foregroundStyle(.secondary)
+                            Text("~/.portbar/history.json")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Show in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([history.storageFile])
+                            }
+                            .buttonStyle(.borderless)
+                        }
+
+                        Text("Only services that match an enabled filter are saved. History stays local to this Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    generalSection("RECENT ACTIVITY") {
+                        if history.events.isEmpty {
+                            ContentUnavailableView(
+                                "No matched service activity yet",
+                                systemImage: "clock",
+                                description: Text("PortBar will add an entry when an enabled service starts or stops.")
+                            )
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 36)
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(history.events) { event in
+                                    historyEventRow(event)
+                                    if event.id != history.events.last?.id {
+                                        Divider()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !history.events.isEmpty {
+                        Divider()
+
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Clear saved activity")
+                                    .font(.system(size: 13, weight: .medium))
+                                Text("This cannot be undone.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Clear history", role: .destructive) {
+                                showsClearHistoryAlert = true
+                            }
+                        }
+                    }
+                }
+                .padding(32)
+            }
+            .frame(maxWidth: 660, alignment: .leading)
+        }
+    }
+
+    private func historyEventRow(_ event: HistoryEvent) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: event.kind.symbol)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(event.kind == .started ? .green : .secondary)
+                .frame(width: 22, height: 22)
+                .background((event.kind == .started ? Color.green : Color.secondary).opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(event.serviceLabels.joined(separator: ", "))
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(event.kind.label.lowercased())
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Text(verbatim: "\(event.processName) · :\(event.port) · PID \(event.pid)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                if !event.workingDirectory.isEmpty {
+                    Text(event.workingDirectory)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            Text(event.occurredAt.formatted(.relative(presentation: .named)))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.vertical, 11)
+    }
+
+    private func generalSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).sectionLabelStyle()
+            content()
+        }
+        .font(.system(size: 13, weight: .medium))
+    }
+
+    private var customAccentColor: Binding<Color> {
+        Binding(
+            get: { preferences.accentColor },
+            set: { preferences.accent = AppAccent.storedValue(for: $0) }
+        )
     }
 
     private var library: some View {
@@ -206,7 +621,7 @@ struct SettingsView: View {
         return HStack(spacing: 8) {
             Image(systemName: isComplete ? "checkmark.circle.fill" : pack.symbol)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isComplete ? Color.accentColor : .secondary)
+                .foregroundStyle(isComplete ? preferences.accentColor : .secondary)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 Text(pack.label)
@@ -220,10 +635,10 @@ struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
         .padding(.horizontal, 9)
-        .background((isSelected ? Color.accentColor.opacity(0.14) : isComplete ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.045)), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background((isSelected ? preferences.accentColor.opacity(0.14) : isComplete ? preferences.accentColor.opacity(0.12) : Color.primary.opacity(0.045)), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(isSelected || isComplete ? Color.accentColor.opacity(isSelected ? 0.42 : 0.22) : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 1)
+                .stroke(isSelected || isComplete ? preferences.accentColor.opacity(isSelected ? 0.42 : 0.22) : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 1)
         }
     }
 
@@ -315,7 +730,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("MONITORING")
                         .sectionLabelStyle()
-                    Text("\(monitor.ports.count) active · \(preferences.pinnedPorts.count) pinned")
+                    Text("\(matchedListenerCount) matched · \(preferences.pinnedPorts.count) pinned")
                         .font(.system(size: 12, weight: .medium))
                     Text(lastScanDescription)
                         .font(.caption2)
@@ -326,12 +741,6 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .help("Scan now")
             }
-            Divider()
-            Toggle("Launch at login", isOn: Binding(
-                get: { preferences.launchAtLogin },
-                set: { preferences.setLaunchAtLogin($0) }
-            ))
-            .toggleStyle(.switch)
         }
         .font(.system(size: 12))
         .padding(16)
@@ -373,10 +782,10 @@ struct SettingsView: View {
                 HStack(alignment: .top, spacing: 14) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 11)
-                            .fill(Color.accentColor.opacity(0.13))
+                            .fill(preferences.accentColor.opacity(0.13))
                         Image(systemName: pack.symbol)
                             .font(.system(size: 20, weight: .medium))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(preferences.accentColor)
                     }
                     .frame(width: 50, height: 50)
 
@@ -388,7 +797,7 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                         Text("Best for \(pack.bestFor).")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(preferences.accentColor)
                     }
                     Spacer(minLength: 12)
                     VStack(alignment: .trailing, spacing: 8) {
@@ -605,13 +1014,13 @@ struct SettingsView: View {
                 ForEach(matchingPorts.prefix(5)) { port in
                     HStack(spacing: 9) {
                         Circle().fill(.green).frame(width: 6, height: 6)
-                        Text(":\(port.port)")
+                        Text(verbatim: ":\(port.port)")
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
                             .frame(width: 54, alignment: .leading)
                         Text(port.processName)
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
-                        Text("PID \(port.pid)")
+                        Text(verbatim: "PID \(port.pid)")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -659,12 +1068,12 @@ struct SettingsView: View {
                     Image(systemName: "circle.fill")
                         .font(.system(size: 7))
                         .foregroundStyle(.secondary)
-                    Text(":\(port.port)")
+                    Text(verbatim: ":\(port.port)")
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                         .frame(width: 54, alignment: .leading)
                     Text(port.processName)
                         .font(.system(size: 12, weight: .medium))
-                    Text("PID \(port.pid) · \(Duration.seconds(port.duration).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))) · \(port.stoppedAt.formatted(.relative(presentation: .named)))")
+                    Text(verbatim: "PID \(port.pid) · \(Duration.seconds(port.duration).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))) · \(port.stoppedAt.formatted(.relative(presentation: .named)))")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -824,6 +1233,41 @@ struct SettingsView: View {
     }
 }
 
+private struct AccentSwatch: View {
+    let accent: AppAccent
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Circle()
+                .fill(accent.color)
+                .frame(width: 20, height: 20)
+                .overlay {
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .overlay {
+                    Circle()
+                        .stroke(
+                            isSelected ? Color.primary.opacity(0.45) : Color.primary.opacity(isHovered ? 0.28 : 0.12),
+                            lineWidth: isSelected ? 2 : 1
+                        )
+                }
+                .scaleEffect(isHovered ? 1.12 : 1)
+        }
+        .buttonStyle(.plain)
+        .help(accent.label)
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovered)
+    }
+}
+
 private struct RuleExplanationItem: Identifiable {
     let id: String
     let symbol: String
@@ -899,6 +1343,7 @@ private struct PortRule: Identifiable, Equatable {
 }
 
 private struct PortRuleEditor: View {
+    @Environment(\.portBarAccent) private var appAccent
     @Binding var ports: String
     @State private var rules: [PortRule]
 
@@ -936,7 +1381,7 @@ private struct PortRuleEditor: View {
                         .font(.system(size: 12, weight: .medium))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(appAccent)
                 .padding(.vertical, 4)
             } else {
                 PortRuleList(rules: $rules)
@@ -1055,6 +1500,7 @@ private struct RuleTerm: Identifiable, Equatable {
 }
 
 private struct TermRuleEditor: View {
+    @Environment(\.portBarAccent) private var appAccent
     let title: String
     let detail: String
     let addLabel: String
@@ -1108,7 +1554,7 @@ private struct TermRuleEditor: View {
                         .font(.system(size: 12, weight: .medium))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(appAccent)
                 .padding(.vertical, 2)
             } else {
                 VStack(spacing: 5) {
@@ -1179,7 +1625,7 @@ private struct PortAnnotationEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Port :\(port.port)")
+            Text(verbatim: "Port :\(port.port)")
                 .font(.headline)
             TextField("Label, e.g. API dev", text: $annotation.label)
             TextEditor(text: $annotation.note)

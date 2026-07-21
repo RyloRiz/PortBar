@@ -7,6 +7,7 @@ import SwiftUI
 import AppKit
 
 struct PortBarMenuView: View {
+    @Environment(\.portBarAccent) private var appAccent
     @Environment(\.openSettings) private var openSettings
     @ObservedObject var monitor: PortMonitor
     @ObservedObject var preferences: PreferencesStore
@@ -17,18 +18,18 @@ struct PortBarMenuView: View {
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 3)
 
-    private var enabledQuickFilters: [QuickFilter] {
-        preferences.quickFilters.filter(\.isEnabled)
+    private var popupQuickFilters: [QuickFilter] {
+        preferences.pinnedPopupServices
     }
 
     private var quickFilterTrayHeight: CGFloat {
-        guard !enabledQuickFilters.isEmpty else { return 0 }
-        let rows = ceil(Double(enabledQuickFilters.count) / Double(columns.count))
+        guard !popupQuickFilters.isEmpty else { return 0 }
+        let rows = ceil(Double(popupQuickFilters.count) / Double(columns.count))
         return min(CGFloat(rows) * 34, 128)
     }
 
     private var selectedFilter: QuickFilter? {
-        preferences.quickFilters.first { $0.id == selectedFilterID && $0.isEnabled }
+        popupQuickFilters.first { $0.id == selectedFilterID }
     }
 
     private var visiblePorts: [ListeningPort] {
@@ -118,6 +119,7 @@ struct PortBarMenuView: View {
                                         port: listener,
                                         annotation: preferences.annotation(for: listener.port),
                                         service: matchingService(for: listener),
+                                        terminalApplication: preferences.terminalApplication,
                                         isPinned: true,
                                         onTogglePin: { preferences.togglePinnedPort(listener.port) },
                                         onCopyPID: { copy("\(listener.pid)") },
@@ -145,6 +147,7 @@ struct PortBarMenuView: View {
                                     port: port,
                                     annotation: preferences.annotation(for: port.port),
                                     service: matchingService(for: port),
+                                    terminalApplication: preferences.terminalApplication,
                                     isPinned: false,
                                     onTogglePin: { preferences.togglePinnedPort(port.port) },
                                     onCopyPID: { copy("\(port.pid)") },
@@ -182,7 +185,7 @@ struct PortBarMenuView: View {
                     .foregroundStyle(.red)
                 Text("Terminate \(port.processName)?")
                     .font(.system(size: 15, weight: .semibold))
-                Text("Stops PID \(port.pid) and its child processes. This cannot be undone.")
+                Text(verbatim: "Stops PID \(port.pid) and its child processes. This cannot be undone.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -210,10 +213,13 @@ struct PortBarMenuView: View {
     private var header: some View {
         HStack(alignment: .center) {
             ZStack {
-                Circle().fill(Color.accentColor.opacity(0.16))
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                Circle().fill(appAccent.opacity(0.16))
+                Image("PortBarLogo")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(6)
+                    .foregroundStyle(appAccent)
             }
             .frame(width: 30, height: 30)
 
@@ -236,7 +242,7 @@ struct PortBarMenuView: View {
     private var quickFilters: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVGrid(columns: columns, spacing: 6) {
-                ForEach(enabledQuickFilters) { filter in
+                ForEach(popupQuickFilters) { filter in
                     QuickFilterButton(filter: filter, isSelected: selectedFilterID == filter.id) {
                         selectedFilterID = selectedFilterID == filter.id ? nil : filter.id
                     }
@@ -327,19 +333,19 @@ struct PortBarMenuView: View {
     }
 
     private func matchesAnyEnabledService(_ port: ListeningPort) -> Bool {
-        enabledQuickFilters.contains { $0.matches(port) }
+        preferences.quickFilters.contains { $0.isEnabled && $0.matches(port) }
     }
 
     private func matchingService(for port: ListeningPort) -> QuickFilter? {
         if let selectedFilter, selectedFilter.matches(port) {
             return selectedFilter
         }
-        return enabledQuickFilters.first { $0.matches(port) }
+        return preferences.quickFilters.first { $0.isEnabled && $0.matches(port) }
     }
 
     private func displayPriority(for port: ListeningPort) -> Int {
         if preferences.pinnedPorts.contains(port.port) { return 2 }
-        return enabledQuickFilters.contains(where: { $0.matches(port) }) ? 1 : 0
+        return preferences.quickFilters.contains(where: { $0.isEnabled && $0.matches(port) }) ? 1 : 0
     }
 
     private var footer: some View {
@@ -379,9 +385,11 @@ struct PortBarMenuView: View {
 }
 
 private struct PortRow: View {
+    @Environment(\.portBarAccent) private var appAccent
     let port: ListeningPort
     let annotation: PortAnnotation
     let service: QuickFilter?
+    let terminalApplication: TerminalApplication
     let isPinned: Bool
     let onTogglePin: () -> Void
     let onCopyPID: () -> Void
@@ -423,7 +431,7 @@ private struct PortRow: View {
             HStack(spacing: 1) {
                 HoverIconButton(
                     systemName: isPinned ? "pin.fill" : "pin",
-                    tint: isPinned ? Color.accentColor : .secondary,
+                    tint: isPinned ? appAccent : .secondary,
                     help: isPinned ? "Unpin port" : "Pin port",
                     action: onTogglePin
                 )
@@ -462,6 +470,7 @@ private struct PortRow: View {
                 port: port,
                 annotation: annotation,
                 service: service,
+                terminalApplication: terminalApplication,
                 onCopyProcessTitle: { copy(port.launchCommand) },
                 onHoverChange: updateInspector(forPanelHover:)
             )
@@ -509,6 +518,7 @@ private struct PortRow: View {
 }
 
 private struct QuickFilterButton: View {
+    @Environment(\.portBarAccent) private var appAccent
     let filter: QuickFilter
     let isSelected: Bool
     let action: () -> Void
@@ -529,7 +539,7 @@ private struct QuickFilterButton: View {
             .padding(.horizontal, 8)
             .frame(height: 28)
             .background(
-                isSelected ? Color.accentColor : Color.primary.opacity(isHovered ? 0.12 : 0.06),
+                isSelected ? appAccent : Color.primary.opacity(isHovered ? 0.12 : 0.06),
                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
             )
         }
@@ -585,6 +595,7 @@ private struct HoverIconLabel: View {
 }
 
 private struct CopyFieldButton: View {
+    @Environment(\.portBarAccent) private var appAccent
     let value: String
     let label: String
 
@@ -601,7 +612,7 @@ private struct CopyFieldButton: View {
                 .background(isHovered ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isHovered ? Color.accentColor : .secondary)
+        .foregroundStyle(isHovered ? appAccent : .secondary)
         .help("Copy \(label)")
         .onHover { isHovered = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovered)
@@ -634,6 +645,7 @@ private struct ProcessDetailPanel: View {
     let port: ListeningPort
     let annotation: PortAnnotation
     let service: QuickFilter?
+    let terminalApplication: TerminalApplication
     let onCopyProcessTitle: () -> Void
     let onHoverChange: (Bool) -> Void
 
@@ -751,7 +763,7 @@ private struct ProcessDetailPanel: View {
         guard !port.workingDirectory.isEmpty else { return }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-a", "Terminal", port.workingDirectory]
+        task.arguments = ["-a", terminalApplication.rawValue, port.workingDirectory]
         try? task.run()
     }
 
@@ -777,6 +789,7 @@ private struct ProcessDetailPanel: View {
 }
 
 private struct OfflinePinnedPortRow: View {
+    @Environment(\.portBarAccent) private var appAccent
     let port: Int
     let annotation: PortAnnotation
     let onUnpin: () -> Void
@@ -802,7 +815,7 @@ private struct OfflinePinnedPortRow: View {
                     .frame(width: 24, height: 24)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(appAccent)
             .help("Unpin port")
         }
         .padding(.horizontal, 14)

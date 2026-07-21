@@ -93,7 +93,7 @@ enum ServiceCatalog {
         QuickFilter(symbol: "cylinder.split.1x2.fill", label: "Temporal", ports: "7233, 8233", processPattern: "temporal", tint: "#0B4C5F"),
         QuickFilter(symbol: "globe", label: "BrowserSync", ports: "3000, 3001", processPattern: "node", launchCommandPattern: "browser-sync", tint: "#F69E2F"),
         QuickFilter(symbol: "curlybraces.square.fill", label: "JSON Server", ports: "3000", processPattern: "node", launchCommandPattern: "json-server", tint: "#8B5A2B"),
-        QuickFilter(symbol: "tunnel.fill", label: "ngrok", ports: "4040", processPattern: "ngrok", tint: "#1F1E37"),
+        QuickFilter(symbol: "network", label: "ngrok", ports: "4040", processPattern: "ngrok", tint: "#1F1E37"),
         QuickFilter(symbol: "play.rectangle.fill", label: "Playwright report", ports: "9323", processPattern: "node", launchCommandPattern: "playwright", tint: "#45BA4B")
     ]
 
@@ -167,6 +167,9 @@ enum ServiceCatalog {
             if filter.label.localizedCaseInsensitiveCompare("Node") == .orderedSame {
                 updated.label = template.label
             }
+            // Service identity is catalog-owned (it is not configurable in Settings),
+            // so saved entries must always follow a corrected system symbol.
+            updated.symbol = template.symbol
             if updated.ports.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 updated.ports = template.ports
             }

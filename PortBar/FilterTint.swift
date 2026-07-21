@@ -5,6 +5,17 @@
 
 import SwiftUI
 
+private struct PortBarAccentKey: EnvironmentKey {
+    static let defaultValue = Color.accentColor
+}
+
+extension EnvironmentValues {
+    var portBarAccent: Color {
+        get { self[PortBarAccentKey.self] }
+        set { self[PortBarAccentKey.self] = newValue }
+    }
+}
+
 enum FilterTint {
     static let options = ["blue", "green", "orange", "purple", "pink", "red", "indigo", "yellow", "gray"]
 

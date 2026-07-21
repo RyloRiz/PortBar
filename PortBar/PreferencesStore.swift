@@ -4,8 +4,70 @@
 //
 
 import Combine
+import AppKit
 import Foundation
 import ServiceManagement
+import SwiftUI
+
+enum AppAccent: String, CaseIterable, Identifiable {
+    case blue, indigo, purple, pink, red, orange, green, graphite
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .blue: "Blue"
+        case .indigo: "Indigo"
+        case .purple: "Purple"
+        case .pink: "Pink"
+        case .red: "Red"
+        case .orange: "Orange"
+        case .green: "Green"
+        case .graphite: "Graphite"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .graphite: .gray
+        default: FilterTint.color(for: rawValue)
+        }
+    }
+
+    static func color(for storedValue: String) -> Color {
+        Self(rawValue: storedValue)?.color ?? FilterTint.color(for: storedValue)
+    }
+
+    static func storedValue(for color: Color) -> String {
+        guard let resolved = NSColor(color).usingColorSpace(.sRGB) else { return "blue" }
+        return String(
+            format: "#%02X%02X%02X",
+            Int((resolved.redComponent * 255).rounded()),
+            Int((resolved.greenComponent * 255).rounded()),
+            Int((resolved.blueComponent * 255).rounded())
+        )
+    }
+}
+
+enum TerminalApplication: String, CaseIterable, Identifiable {
+    case terminal = "Terminal"
+    case iTerm = "iTerm"
+    case warp = "Warp"
+    case ghostty = "Ghostty"
+    case wezTerm = "WezTerm"
+    case kitty = "kitty"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .iTerm: "iTerm"
+        case .wezTerm: "WezTerm"
+        case .kitty: "kitty"
+        default: rawValue
+        }
+    }
+}
 
 struct QuickFilter: Identifiable, Codable, Equatable {
     var id = UUID()
@@ -144,10 +206,10 @@ struct ServiceSection: Identifiable {
 @MainActor
 final class PreferencesStore: ObservableObject {
     @Published var quickFilters: [QuickFilter] {
-        didSet { saveQuickFilters() }
-    }
-    @Published var showsPortCount: Bool {
-        didSet { defaults.set(showsPortCount, forKey: Keys.showsPortCount) }
+        didSet {
+            saveQuickFilters()
+            prunePinnedServices()
+        }
     }
     @Published var pinnedPorts: [Int] {
         didSet { defaults.set(pinnedPorts, forKey: Keys.pinnedPorts) }
@@ -158,16 +220,53 @@ final class PreferencesStore: ObservableObject {
     @Published var showsAllListeners: Bool {
         didSet { defaults.set(showsAllListeners, forKey: Keys.showsAllListeners) }
     }
+    @Published private(set) var pinnedServiceIDs: [QuickFilter.ID] {
+        didSet {
+            let validIDs = validPinnedServiceIDs(from: pinnedServiceIDs)
+            if validIDs != pinnedServiceIDs {
+                pinnedServiceIDs = validIDs
+                return
+            }
+            defaults.set(pinnedServiceIDs.map(\.uuidString), forKey: Keys.pinnedServiceIDs)
+        }
+    }
+    @Published private(set) var popupServiceLimit: Int {
+        didSet {
+            let normalized = Self.normalizedPopupServiceLimit(popupServiceLimit)
+            if normalized != popupServiceLimit {
+                popupServiceLimit = normalized
+                return
+            }
+            defaults.set(popupServiceLimit, forKey: Keys.popupServiceLimit)
+            if pinnedServiceIDs.count > popupServiceLimit {
+                pinnedServiceIDs = Array(pinnedServiceIDs.prefix(popupServiceLimit))
+            }
+        }
+    }
+    @Published var accent: String {
+        didSet { defaults.set(accent, forKey: Keys.accent) }
+    }
+    var accentColor: Color { AppAccent.color(for: accent) }
+    @Published var terminalApplication: TerminalApplication {
+        didSet { defaults.set(terminalApplication.rawValue, forKey: Keys.terminalApplication) }
+    }
     @Published private(set) var launchAtLogin: Bool
     @Published private(set) var portAnnotations: [String: PortAnnotation]
 
     private let defaults = UserDefaults.standard
 
+    static let popupServiceLimitOptions = Array(stride(from: 3, through: 30, by: 3))
+
     init() {
-        showsPortCount = defaults.object(forKey: Keys.showsPortCount) as? Bool ?? true
         pinnedPorts = defaults.array(forKey: Keys.pinnedPorts) as? [Int] ?? []
-        pollingInterval = defaults.object(forKey: Keys.pollingInterval) as? Double ?? 1.5
+        pollingInterval = defaults.object(forKey: Keys.pollingInterval) as? Double ?? 5
         showsAllListeners = defaults.object(forKey: Keys.showsAllListeners) as? Bool ?? false
+        pinnedServiceIDs = []
+        popupServiceLimit = Self.normalizedPopupServiceLimit(
+            defaults.object(forKey: Keys.popupServiceLimit) as? Int ?? 9
+        )
+        accent = defaults.string(forKey: Keys.accent) ?? AppAccent.blue.rawValue
+        terminalApplication = TerminalApplication(rawValue: defaults.string(forKey: Keys.terminalApplication) ?? "") ?? .terminal
         launchAtLogin = SMAppService.mainApp.status == .enabled
         portAnnotations = Self.loadAnnotations(from: defaults)
 
@@ -187,6 +286,16 @@ final class PreferencesStore: ObservableObject {
         } else {
             quickFilters = ServiceCatalog.filters
             defaults.set(ServiceCatalog.version, forKey: Keys.serviceCatalogVersion)
+        }
+
+        if let storedIDs = defaults.stringArray(forKey: Keys.pinnedServiceIDs) {
+            pinnedServiceIDs = validPinnedServiceIDs(from: storedIDs.compactMap(UUID.init(uuidString:)))
+        } else {
+            pinnedServiceIDs = quickFilters
+                .filter(\.isEnabled)
+                .prefix(popupServiceLimit)
+                .map(\.id)
+            defaults.set(pinnedServiceIDs.map(\.uuidString), forKey: Keys.pinnedServiceIDs)
         }
     }
 
@@ -261,6 +370,46 @@ final class PreferencesStore: ObservableObject {
         pinnedPorts.removeAll { values.contains($0) }
     }
 
+    var pinnedPopupServices: [QuickFilter] {
+        let servicesByID = Dictionary(uniqueKeysWithValues: quickFilters.map { ($0.id, $0) })
+        return pinnedServiceIDs.compactMap { servicesByID[$0] }
+    }
+
+    var canPinMoreServices: Bool {
+        pinnedServiceIDs.count < popupServiceLimit
+    }
+
+    func isServicePinned(_ service: QuickFilter) -> Bool {
+        pinnedServiceIDs.contains(service.id)
+    }
+
+    func pinService(_ service: QuickFilter) {
+        guard service.isEnabled,
+              !pinnedServiceIDs.contains(service.id),
+              pinnedServiceIDs.count < popupServiceLimit else { return }
+        pinnedServiceIDs.append(service.id)
+    }
+
+    func unpinService(_ service: QuickFilter) {
+        pinnedServiceIDs.removeAll { $0 == service.id }
+    }
+
+    func movePinnedService(_ serviceID: QuickFilter.ID, before targetID: QuickFilter.ID) {
+        guard serviceID != targetID,
+              let sourceIndex = pinnedServiceIDs.firstIndex(of: serviceID) else { return }
+
+        pinnedServiceIDs.remove(at: sourceIndex)
+        guard let targetIndex = pinnedServiceIDs.firstIndex(of: targetID) else {
+            pinnedServiceIDs.insert(serviceID, at: min(sourceIndex, pinnedServiceIDs.endIndex))
+            return
+        }
+        pinnedServiceIDs.insert(serviceID, at: targetIndex)
+    }
+
+    func setPopupServiceLimit(_ limit: Int) {
+        popupServiceLimit = limit
+    }
+
     func annotation(for port: Int) -> PortAnnotation {
         portAnnotations["\(port)"] ?? PortAnnotation()
     }
@@ -321,6 +470,22 @@ final class PreferencesStore: ObservableObject {
         }
     }
 
+    private func prunePinnedServices() {
+        let validIDs = validPinnedServiceIDs(from: pinnedServiceIDs)
+        guard validIDs != pinnedServiceIDs else { return }
+        pinnedServiceIDs = validIDs
+    }
+
+    private func validPinnedServiceIDs(from ids: [QuickFilter.ID]) -> [QuickFilter.ID] {
+        let enabledIDs = Set(quickFilters.filter(\.isEnabled).map(\.id))
+        var seen = Set<QuickFilter.ID>()
+        return ids.filter { enabledIDs.contains($0) && seen.insert($0).inserted }.prefix(popupServiceLimit).map { $0 }
+    }
+
+    private static func normalizedPopupServiceLimit(_ value: Int) -> Int {
+        popupServiceLimitOptions.min(by: { abs($0 - value) < abs($1 - value) }) ?? 9
+    }
+
     private static func loadAnnotations(from defaults: UserDefaults) -> [String: PortAnnotation] {
         guard let data = defaults.data(forKey: Keys.portAnnotations),
               let annotations = try? JSONDecoder().decode([String: PortAnnotation].self, from: data) else { return [:] }
@@ -329,10 +494,13 @@ final class PreferencesStore: ObservableObject {
 
     private enum Keys {
         static let quickFilters = "quickFilters"
-        static let showsPortCount = "showsPortCount"
         static let pinnedPorts = "pinnedPorts"
         static let pollingInterval = "pollingInterval"
         static let showsAllListeners = "showsAllListeners"
+        static let pinnedServiceIDs = "pinnedServiceIDs"
+        static let popupServiceLimit = "popupServiceLimit"
+        static let accent = "accent"
+        static let terminalApplication = "terminalApplication"
         static let portAnnotations = "portAnnotations"
         static let serviceCatalogVersion = "serviceCatalogVersion"
     }
