@@ -32,6 +32,7 @@ jobs:
                    -derivedDataPath BuildData \
                    CODE_SIGNING_ALLOWED=NO \
                    CODE_SIGNING_REQUIRED=NO \
+                   OTHER_CODE_SIGN_FLAGS="--no-signature" \
                    clean build
                    
     - name: Prepare Deployment Directory
@@ -39,6 +40,8 @@ jobs:
         mkdir dmg_root
         # Find the compiled .app bundle and copy it to the staging folder
         cp -R BuildData/Build/Products/Release/PortBar.app dmg_root/
+        # Remove code signing (kept breaking)
+        codesign --remove-signature dmg_root/PortBar.app
 
     - name: Install create-dmg tool
       run: brew install create-dmg
